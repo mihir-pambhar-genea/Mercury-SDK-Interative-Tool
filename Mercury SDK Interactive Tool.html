@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mercury SDK Studio</title>
+    
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        body { background-color: #0f172a; color: #cbd5e1; font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.05); }
+        .sidebar-scroll { scrollbar-width: thin; scrollbar-color: #334155 #0f172a; }
+        .sidebar-scroll::-webkit-scrollbar { width: 6px; }
+        .sidebar-scroll::-webkit-scrollbar-track { background: #0f172a; }
+        .sidebar-scroll::-webkit-scrollbar-thumb { background-color: #334155; border-radius: 3px; }
+        .code-input { font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+        .fade-in { animation: fadeIn 0.2s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+        
+        /* Custom Table Styling */
+        .builder-table th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; padding: 0.75rem 1rem; border-bottom: 1px solid #334155; text-align: left; }
+        .builder-table td { padding: 0.75rem 1rem; border-bottom: 1px solid #1e293b; vertical-align: top; }
+        .builder-table tr:hover td { background-color: rgba(51, 65, 85, 0.3); }
+    </style>
+</head>
+<body class="h-screen overflow-hidden flex flex-col">
+    <div id="root" class="h-full"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        // --- COMPLETE COMMAND DATABASE (Updated 109 & Others) ---
+        const COMMANDS = {
+            // SECTION 3: SYSTEM
+            "011": { cat: "03-System", name: "System Level Specification", desc: "Sets max channels, SCPs, etc.", fields: [{n:"Cmd",v:"011"}, {n:"nPorts",d:"Max Channels (1-1024)"}, {n:"nScps",d:"Max SCPs (1-1024)"}, {n:"Obsolete1",v:"0"}, {n:"Obsolete2",v:"0"}, {n:"DirectMode",v:"1"}] },
+            "013": { cat: "03-System", name: "Create SCP (Legacy)", desc: "Define connection parameters.", fields: [{n:"Cmd",v:"013"}, {n:"SCP ID",d:"Unique ID"}, {n:"Address",d:"Phys Addr (0-7)"}, {n:"Comm Type",d:"256=Serial, 260=IP"}, {n:"Retry",d:"Offline count"}, {n:"Poll Dly",d:"ms (e.g. 5000)"}, {n:"Conn Str",t:"s",d:"IP:Port or ComStr"}, {n:"Pwd",t:"s",d:"AES Password"}, {n:"Offline Time",d:"ms (Default 15000)"}] },
+            "1013": { cat: "03-System", name: "Create SCP (Extended)", desc: "Define connection params (supports long strings).", fields: [{n:"Cmd",v:"1013"}, {n:"SCP ID"}, {n:"Address"}, {n:"Comm Type"}, {n:"Retry"}, {n:"Poll Dly"}, {n:"Conn Str",t:"s"}, {n:"Pwd",t:"s"}, {n:"Offline Time"}] },
+            "015": { cat: "03-System", name: "Delete SCP", desc: "Removes SCP structure.", fields: [{n:"Cmd",v:"015"}, {n:"SCP ID"}] },
+            "203": { cat: "03-System", name: "Shutdown", desc: "Closes channels/files.", fields: [{n:"Cmd",v:"203"}, {n:"Arg",v:"0"}] },
+            "318": { cat: "03-System", name: "Set SCP ID", desc: "Sets reported ID.", fields: [{n:"Cmd",v:"318"}, {n:"SCP Num"}, {n:"SCP ID"}] },
+            "1107": { cat: "03-System", name: "SCP Device Spec", desc: "Allocates memory structures.", fields: [{n:"Cmd",v:"1107"}, {n:"LastMod",v:"0"}, {n:"SCP ID"}, {n:"Unused",v:"0"}, {n:"Unused",v:"0"}, {n:"Unused",v:"0"}, {n:"Unused",v:"0"}, {n:"MSP1 Ports"}, {n:"Trans"}, {n:"SIOs"}, {n:"MPs"}, {n:"CPs"}, {n:"ACRs"}, {n:"ALs"}, {n:"Triggers"}, {n:"Procs"}, {n:"GMT Off"}, {n:"DST ID"}] },
+
+            // SECTION 4: TIME
+            "302": { cat: "04-Time", name: "Time Set", desc: "Syncs controller time (UTC).", fields: [{n:"Cmd",v:"302"}, {n:"SCP ID"}, {n:"Time(Epoch)", d:"Seconds since 1970"}] },
+            "1116": { cat: "04-Time", name: "DST Config", desc: "Configures Daylight Saving Time.", fields: [{n:"Cmd",v:"1116"}, {n:"SCP ID"}, {n:"Start Year"}, {n:"S Month"}, {n:"S Day"}, {n:"S Hour"}, {n:"S Min"}, {n:"S Sec"}, {n:"End Year"}, {n:"E Month"}, {n:"E Day"}, {n:"E Hour"}, {n:"E Min"}, {n:"E Sec"}] },
+
+            // SECTION 5: HOST COMM
+            "012": { cat: "05-HostComm", name: "Create Channel", desc: "Creates comms channel.", fields: [{n:"Cmd",v:"012"}, {n:"Chan ID"}, {n:"Type",d:"4=IP Server, 7=IP Client"}, {n:"Port"}, {n:"Baud"}, {n:"Tmr1"}, {n:"Tmr2"}] },
+            "014": { cat: "05-HostComm", name: "Delete Channel", desc: "Deletes comms channel.", fields: [{n:"Cmd",v:"014"}, {n:"Chan ID"}] },
+            "207": { cat: "05-HostComm", name: "Attach SCP", desc: "Starts connection.", fields: [{n:"Cmd",v:"207"}, {n:"SCP ID"}, {n:"Chan ID"}] },
+            "208": { cat: "05-HostComm", name: "Detach SCP", desc: "Stops connection.", fields: [{n:"Cmd",v:"208"}, {n:"SCP ID"}] },
+            "211": { cat: "05-HostComm", name: "Dual Port Control", desc: "Switch active port.", fields: [{n:"Cmd",v:"211"}, {n:"SCP ID"}, {n:"Port",d:"0=Pri, 1=Alt"}, {n:"Cmd", d:"3=Set Active"}] },
+            "324": { cat: "05-HostComm", name: "Set Offline Time", desc: "Modifies disconnect timeout.", fields: [{n:"Cmd",v:"324"}, {n:"SCP ID"}, {n:"Time", d:"Milliseconds"}] },
+
+            // SECTION 6: HARDWARE
+            "108": { cat: "06-Hardware", name: "Driver Config", desc: "Define SIO driver/port.", fields: [{n:"Cmd",v:"108"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"Drvr #"}, {n:"Port #",d:"1=Ext, 3=Int"}, {n:"Baud"}, {n:"Timeout",d:"90ms default"}] },
+            // UPDATED 109 COMMAND - Full Definition
+            "109": { cat: "06-Hardware", name: "SIO Config", desc: "Configure SIO panels.", fields: [
+                {n:"Cmd",v:"109"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"SIO #"}, {n:"nIn"}, {n:"nOut"}, {n:"nRdr"}, {n:"Model",d:"84=MR52, 85=EP1502"}, 
+                {n:"Rev", d:"Min Revision"}, {n:"SN Low",v:"0"}, {n:"SN High",v:"-1"}, {n:"Enable",d:"0=Dis, 1=En, 2=Enc"}, 
+                {n:"Port", d:"MSP1 Port ID"}, {n:"Ch Out", d:"Addr"}, {n:"Ch In", d:"Addr"}, {n:"Address",d:"Phy Addr (0-31)"}, 
+                {n:"E Max",d:"Err Count"}, {n:"Flags",d:"0x20=Rev Input"}, {n:"Nxt In",v:"-1"}, {n:"Nxt Out",v:"-1"}, {n:"Nxt Rdr",v:"-1"}, 
+                {n:"Test",v:"0"}, {n:"OEM",v:"0"}, {n:"Mask",v:"0"}
+            ] },
+            "128": { cat: "06-Hardware", name: "SIO Network Cfg", desc: "For MR51e/MR62e.", fields: [{n:"Cmd",v:"128"}, {n:"SCP ID"}, {n:"SIO #"}, {n:"IP",t:"s"}, {n:"MAC",t:"s"}, {n:"Mode"}] },
+            "110": { cat: "06-Hardware", name: "Input Spec", desc: "Define Input behavior.", fields: [{n:"Cmd",v:"110"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"SIO #"}, {n:"Input #"}, {n:"Conv Tbl",d:"0=NC, 1=NO, 2=1k/2k"}, {n:"Debounce"}] },
+            "111": { cat: "06-Hardware", name: "Output Spec", desc: "Define Output behavior.", fields: [{n:"Cmd",v:"111"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"SIO #"}, {n:"Output #"}, {n:"Mode",d:"0=Norm, 1=Inv"}] },
+            "112": { cat: "06-Hardware", name: "Reader Spec", desc: "Define Reader hardware.", fields: [{n:"Cmd",v:"112"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"SIO #"}, {n:"Rdr #"}, {n:"Format",d:"1=Wieg, 20=Casi"}, {n:"Keypad",d:"0=None, 2=4bit"}, {n:"LED Mode",d:"1=2wire, 7=OSDP"}] },
+            "330": { cat: "06-Hardware", name: "Modify OEM Code", desc: "Change OEM identifier.", fields: [{n:"Cmd",v:"330"}, {n:"SCP ID"}, {n:"Type"}, {n:"SIO #"}, {n:"OEM Code"}, {n:"Auth Code"}, {n:"DataLen"}, {n:"Data",t:"a"}] },
+            "1101": { cat: "06-Hardware", name: "Input Conversion", desc: "Custom voltage tables.", fields: [{n:"Cmd",v:"1101"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"Table #"}, {n:"Pri"}, {n:"Sts"}, {n:"Pri"}, {n:"Sts"}, {n:"Min"}, {n:"Max"}] },
+
+            // SECTION 7: MONITOR/CONTROL POINTS
+            "113": { cat: "07-Points", name: "Monitor Point Cfg", desc: "Logical Alarm Point.", fields: [{n:"Cmd",v:"113"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"MP #"}, {n:"SIO #"}, {n:"Input #"}, {n:"Log Code"}, {n:"Mode"}] },
+            "114": { cat: "07-Points", name: "Control Point Cfg", desc: "Logical Output Point.", fields: [{n:"Cmd",v:"114"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"CP #"}, {n:"SIO #"}, {n:"Output #"}, {n:"Pulse"}] },
+            "120": { cat: "07-Points", name: "Config MP Group", desc: "Group masking.", fields: [{n:"Cmd",v:"120"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"MPG #"}, {n:"Count"}, {n:"List",t:"a"}] },
+            "306": { cat: "07-Points", name: "MP Mask", desc: "Mask/Unmask MP.", fields: [{n:"Cmd",v:"306"}, {n:"SCP ID"}, {n:"MP #"}, {n:"Set(1)/Clr(0)"}] },
+            "307": { cat: "07-Points", name: "CP Command", desc: "Pulse/On/Off Control Point.", fields: [{n:"Cmd",v:"307"}, {n:"SCP ID"}, {n:"CP #"}, {n:"Cmd",d:"1=Off, 2=On, 3=Pulse"}, {n:"On Time"}, {n:"Off Time"}, {n:"Repeat"}] },
+            "321": { cat: "07-Points", name: "MPG Arm/Disarm", desc: "Control MP Group.", fields: [{n:"Cmd",v:"321"}, {n:"SCP ID"}, {n:"MPG #"}, {n:"Cmd"}, {n:"Arg"}] },
+
+            // SECTION 8: READERS
+            "115": { cat: "08-Access", name: "ACR Config", desc: "Access Control Reader logic.", fields: [{n:"Cmd",v:"115"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"ACR #"}, {n:"Type",d:"0=Single, 1=Master"}, {n:"Pair ACR"}, {n:"Rdr SIO"}, {n:"Rdr #"}, {n:"Strk SIO"}, {n:"Strk #"}, {n:"Min T"}, {n:"Max T"}, {n:"Mode"}, {n:"Door SIO"}, {n:"Door #"}] },
+            "1121": { cat: "08-Access", name: "Config Access Area", desc: "Occupancy control.", fields: [{n:"Cmd",v:"1121"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"Area #"}, {n:"Multi"}, {n:"Control"}, {n:"Occ Set"}, {n:"Occ Max"}] },
+            "122": { cat: "08-Access", name: "LED/Buzzer Specs", desc: "LED patterns.", fields: [{n:"Cmd",v:"122"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"Mode Tbl"}, {n:"ID"}, {n:"On Clr"}, {n:"Off Clr"}, {n:"On Tm"}, {n:"Off Tm"}, {n:"Rpt"}, {n:"Beep"}] },
+            "1102": { cat: "08-Access", name: "Card Formatter", desc: "Wiegand/Mag formats.", fields: [{n:"Cmd",v:"1102"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"Fmt #"}, {n:"Facility"}, {n:"Offset"}, {n:"Func ID"}, {n:"Flags"}, {n:"Bits"}, {n:"Parity..."}] },
+            "308": { cat: "08-Access", name: "ACR Mode", desc: "Lock/Unlock/CardOnly.", fields: [{n:"Cmd",v:"308"}, {n:"SCP ID"}, {n:"ACR #"}, {n:"Mode",d:"2=Unlck, 3=Lck, 5=Card"}] },
+            "309": { cat: "08-Access", name: "Forced Open Mask", desc: "Suppress Forced Open.", fields: [{n:"Cmd",v:"309"}, {n:"SCP ID"}, {n:"ACR #"}, {n:"State"}] },
+            "310": { cat: "08-Access", name: "Held Open Mask", desc: "Suppress Held Open.", fields: [{n:"Cmd",v:"310"}, {n:"SCP ID"}, {n:"ACR #"}, {n:"State"}] },
+            "311": { cat: "08-Access", name: "Momentary Unlock", desc: "Grant Access cycle.", fields: [{n:"Cmd",v:"311"}, {n:"SCP ID"}, {n:"ACR #"}, {n:"Floor"}, {n:"Time"}, {n:"Held T"}, {n:"Pre T"}] },
+            "329": { cat: "08-Access", name: "Host Response", desc: "Reply to host decision request.", fields: [{n:"Cmd",v:"329"}, {n:"SCP ID"}, {n:"ACR #"}, {n:"Allow(1)/Deny(0)"}, {n:"CardID"}] },
+            "331": { cat: "08-Access", name: "Simulate Card", desc: "Inject card read.", fields: [{n:"Cmd",v:"331"}, {n:"SCP ID"}, {n:"Cmd"}, {n:"ACR #"}, {n:"Time"}, {n:"Fmt"}, {n:"Fac"}, {n:"CardID"}] },
+            "337": { cat: "08-Access", name: "OSDP Passthrough", desc: "Send raw OSDP.", fields: [{n:"Cmd",v:"337"}, {n:"SCP ID"}, {n:"ACR #"}, {n:"Seq"}, {n:"Role"}, {n:"Type"}, {n:"Len"}, {n:"Data",t:"h"}] },
+            "340": { cat: "08-Access", name: "OSDP File Xfer", desc: "FW update for OSDP readers.", fields: [{n:"Cmd",v:"340"}, {n:"SCP ID"}, {n:"Pri Mask"}, {n:"Alt Mask"}, {n:"File",t:"s"}] },
+
+            // SECTION 9: SCHEDULES
+            "2103": { cat: "09-Schedules", name: "Ext Timezone", desc: "Define TZ intervals.", fields: [{n:"Cmd",v:"2103"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"TZ #"}, {n:"Mode"}, {n:"Count"}, {n:"Intervals",t:"a"}] },
+            "3103": { cat: "09-Schedules", name: "Ext TZ Activation", desc: "TZ with date range.", fields: [{n:"Cmd",v:"3103"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"TZ #"}, {n:"Mode"}, {n:"Act Date"}, {n:"Deact Date"}, {n:"Count"}, {n:"Intervals",t:"a"}] },
+            "1104": { cat: "09-Schedules", name: "Holiday Cfg", desc: "Define holiday dates.", fields: [{n:"Cmd",v:"1104"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"Unused",v:"-1"}, {n:"Year"}, {n:"Month"}, {n:"Day"}, {n:"Dur"}, {n:"Type"}] },
+            "314": { cat: "09-Schedules", name: "Time Zone Control", desc: "Override TZs.", fields: [{n:"Cmd",v:"314"}, {n:"SCP ID"}, {n:"TZ #"}, {n:"Cmd"}] },
+
+            // SECTION 10: DATABASE
+            "1105": { cat: "10-Database", name: "DB Spec", desc: "Define card DB structure.", fields: [{n:"Cmd",v:"1105"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"nCards"}, {n:"nAlvl"}, {n:"nPin"}, {n:"bIssue"}, {n:"bApb"}, {n:"bAct"}, {n:"bDeact"}, {n:"bVac"}, {n:"bUpgr"}, {n:"bUser"}, {n:"bLim"}, {n:"bTimeApb"}, {n:"nTz"}, {n:"bAsset"}] },
+            "8304": { cat: "10-Database", name: "Card Record (HC)", desc: "Add/Mod Cardholder.", fields: [{n:"Cmd",v:"8304"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"Flags"}, {n:"CardID"}, {n:"Issue"}, {n:"PIN",t:"s"}, {n:"ALs",t:"a"}, {n:"APB"}, {n:"Use"}, {n:"Act"}, {n:"Deact"}, {n:"Vac"}, {n:"VacDays"}, {n:"Tmp"}, {n:"TmpDays"}, {n:"ULs",t:"a"}, {n:"Prec",t:"a"}] },
+            "3305": { cat: "10-Database", name: "Delete Card", desc: "Delete by CardID.", fields: [{n:"Cmd",v:"3305"}, {n:"SCP ID"}, {n:"CardID"}] },
+            "2116": { cat: "10-Database", name: "Access Level Ext", desc: "Map ALs to TZs.", fields: [{n:"Cmd",v:"2116"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"AL #"}, {n:"Op Mode"}, {n:"TZ List",t:"a"}] },
+            "1123": { cat: "10-Database", name: "Asset DB Spec", desc: "Define Asset DB.", fields: [{n:"Cmd",v:"1123"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"nAssets"}, {n:"ID Size"}, {n:"nOwners"}, {n:"Args",t:"a"}] },
+            "3124": { cat: "10-Database", name: "Asset Record", desc: "Add/Mod Asset.", fields: [{n:"Cmd",v:"3124"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"AssetID",t:"h"}, {n:"Owners",t:"a"}, {n:"Classes",t:"a"}] },
+            
+            // SECTION 11: TRANSACTIONS/STATUS
+            "303": { cat: "11-Status", name: "Set Trans Index", desc: "Set log pointer.", fields: [{n:"Cmd",v:"303"}, {n:"SCP ID"}, {n:"Index"}] },
+            "401": { cat: "11-Status", name: "ID Request", desc: "Get SCP details.", fields: [{n:"Cmd",v:"401"}, {n:"SCP ID"}] },
+            "404": { cat: "11-Status", name: "SIO Status", desc: "Get SIO state.", fields: [{n:"Cmd",v:"404"}, {n:"SCP ID"}, {n:"First"}, {n:"Count"}] },
+            "405": { cat: "11-Status", name: "MP Status", desc: "Get Input state.", fields: [{n:"Cmd",v:"405"}, {n:"SCP ID"}, {n:"First"}, {n:"Count"}] },
+            "407": { cat: "11-Status", name: "ACR Status", desc: "Get Reader state.", fields: [{n:"Cmd",v:"407"}, {n:"SCP ID"}, {n:"First"}, {n:"Count"}] },
+
+            // SECTION 12: TRIGGERS
+            "117": { cat: "12-Triggers", name: "Trigger Spec", desc: "Define event logic.", fields: [{n:"Cmd",v:"117"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"Trig #"}, {n:"Cmd"}, {n:"Proc #"}, {n:"Src Type"}, {n:"Src Num"}, {n:"Tran Type"}, {n:"Code Map"}, {n:"TZ"}, {n:"Vars",t:"a"}, {n:"Args",t:"a"}] },
+            "118": { cat: "12-Triggers", name: "Action Spec", desc: "Define procedure actions.", fields: [{n:"Cmd",v:"118"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"Proc #"}, {n:"Type"}, {n:"Args",t:"a"}] },
+            "312": { cat: "12-Triggers", name: "Proc Control", desc: "Exec/Abort procedure.", fields: [{n:"Cmd",v:"312"}, {n:"SCP ID"}, {n:"Proc #"}, {n:"Cmd"}] },
+            
+            // SECTION 13: USER COMMANDS
+            "1141": { cat: "13-UserCmd", name: "User Cmd Cfg", desc: "Keypad commands.", fields: [{n:"Cmd",v:"1141"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"ID"}, {n:"Code",t:"s"}, {n:"ACR Mask",t:"h"}] },
+            "1144": { cat: "13-UserCmd", name: "Background Text", desc: "LCD Idle text.", fields: [{n:"Cmd",v:"1144"}, {n:"SCP ID"}, {n:"ACR"}, {n:"Spec"}, {n:"Index"}, {n:"Text",t:"s"}] },
+
+            // SECTION 14: IPS
+            "2220": { cat: "14-IPS", name: "Create IPS Groups", desc: "Alloc IPS memory.", fields: [{n:"Cmd",v:"2220"}, {n:"SCP ID"}, {n:"Count"}, {n:"Pts"}] },
+            "2221": { cat: "14-IPS", name: "IPS Config", desc: "Config IPS Group.", fields: [{n:"Cmd",v:"2221"}, {n:"SCP ID"}, {n:"IPS #"}, {n:"State"}, {n:"Entry"}, {n:"Exit"}, {n:"Procs",t:"a"}] },
+            "332": { cat: "14-IPS", name: "IPS Control", desc: "Arm/Disarm.", fields: [{n:"Cmd",v:"332"}, {n:"SCP ID"}, {n:"IPS #"}, {n:"Cmd"}, {n:"Arg1"}, {n:"Arg2"}] },
+
+            // SECTION 15: UTILITY
+            "206": { cat: "15-Utility", name: "FW Download", desc: "Update SCP firmware.", fields: [{n:"Cmd",v:"206"}, {n:"SCP ID"}, {n:"File",t:"s"}] },
+            "301": { cat: "15-Utility", name: "Reset SCP", desc: "Reboot controller.", fields: [{n:"Cmd",v:"301"}, {n:"SCP ID"}] },
+            "1851": { cat: "15-Utility", name: "RMS Read", desc: "Read raw memory.", fields: [{n:"Cmd",v:"1851"}, {n:"SCP ID"}, {n:"Offset"}, {n:"Count"}] },
+            "1853": { cat: "15-Utility", name: "Structure Read", desc: "Check allocations.", fields: [{n:"Cmd",v:"1853"}, {n:"SCP ID"}, {n:"Count"}, {n:"IDs",t:"a"}] },
+
+            // SECTION 16: SECURITY
+            "127": { cat: "16-Security", name: "SIO Encryption", desc: "SIO AES/PKI.", fields: [{n:"Cmd",v:"127"}, {n:"SCP ID"}, {n:"SIO #"}, {n:"Cmd"}, {n:"Key",t:"h"}] },
+            "212": { cat: "16-Security", name: "Host Encryption", desc: "Host AES.", fields: [{n:"Cmd",v:"212"}, {n:"SCP ID"}, {n:"Cmd"}, {n:"Key",t:"h"}] },
+            "317": { cat: "16-Security", name: "Set Password", desc: "Host password.", fields: [{n:"Cmd",v:"317"}, {n:"SCP ID"}, {n:"Password",t:"s"}] },
+
+            // SECTION 17: ELEVATOR
+            "501": { cat: "17-Elevator", name: "Elev Spec", desc: "Alloc Elevator structs.", fields: [{n:"Cmd",v:"501"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"Max EAL"}, {n:"Max Flr"}] },
+            "502": { cat: "17-Elevator", name: "Elev Config", desc: "Map floors to TZs.", fields: [{n:"Cmd",v:"502"}, {n:"Mod",v:"0"}, {n:"SCP ID"}, {n:"EAL #"}, {n:"TZs",t:"a"}] },
+            
+            // SECTION 18: WEB SERVICES
+            "2250": { cat: "18-WebSvc", name: "Web Login Cfg", desc: "Users/PSIA.", fields: [{n:"Cmd",v:"2250"}, {n:"SCP ID"}, {n:"Log #"}, {n:"Type"}, {n:"User",t:"s"}, {n:"Pass",t:"s"}] },
+            "2253": { cat: "18-WebSvc", name: "HTS Client", desc: "MQTT/Cloud.", fields: [{n:"Cmd",v:"2253"}, {n:"SCP ID"}, {n:"Type"}, {n:"Broker",t:"s"}, {n:"User",t:"s"}, {n:"Pass",t:"s"}] },
+
+            // SECTION 19: WEB CONFIG
+            "900": { cat: "19-WebCfg", name: "Read Cfg", desc: "Read web settings.", fields: [{n:"Cmd",v:"900"}, {n:"SCP ID"}, {n:"Type"}] },
+            "902": { cat: "19-WebCfg", name: "Network", desc: "IP/DNS settings.", fields: [{n:"Cmd",v:"902"}, {n:"SCP ID"}, {n:"Method"}, {n:"IP"}, {n:"Mask"}, {n:"GW"}, {n:"Host",t:"s"}] },
+        };
+
+        // --- UTILS ---
+        const tokenize = (str) => {
+            const regex = /"([^"]*)"|(\S+)/g;
+            const tokens = [];
+            let match;
+            while ((match = regex.exec(str)) !== null) {
+                if (match[1] !== undefined) tokens.push(`"${match[1]}"`);
+                else tokens.push(match[2]);
+            }
+            return tokens;
+        };
+
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('builder'); // Default to Builder as requested
+            const [selectedCmd, setSelectedCmd] = useState('011');
+            const [inputLog, setInputLog] = useState('');
+            const [searchQuery, setSearchQuery] = useState('');
+            const [builderState, setBuilderState] = useState({});
+
+            const categories = useMemo(() => {
+                const cats = {};
+                Object.entries(COMMANDS).forEach(([id, def]) => {
+                    if (!cats[def.cat]) cats[def.cat] = [];
+                    cats[def.cat].push({ id, ...def });
+                });
+                return Object.keys(cats).sort().map(k => ({ name: k, cmds: cats[k] }));
+            }, []);
+
+            const decoded = useMemo(() => {
+                if (!inputLog.trim()) return null;
+                let clean = inputLog;
+                const match = inputLog.match(/(?:command_str":\s*"|^\s*)(\d+\s+.*)/);
+                if (match) clean = match[1].replace(/\\"/g, '"').replace(/",\s*"no_ack":true}*$/, '');
+                
+                const tokens = tokenize(clean);
+                if (!tokens.length) return null;
+                
+                const cmdId = tokens[0];
+                const def = COMMANDS[cmdId];
+                
+                if (!def) return { unknown: true, id: cmdId, tokens };
+
+                let tIdx = 0;
+                const fields = [];
+                def.fields.forEach(f => {
+                    if (tIdx >= tokens.length) return;
+                    
+                    let val = "";
+                    if (f.t === 'a') {
+                        const rest = tokens.slice(tIdx).join(' ');
+                        val = rest;
+                        tIdx = tokens.length; 
+                    } else {
+                        val = tokens[tIdx++];
+                    }
+                    fields.push({ name: f.n, val });
+                });
+
+                // Catch extended data
+                const trailing = tIdx < tokens.length ? tokens.slice(tIdx) : [];
+
+                return { def, fields, trailing, raw: clean };
+            }, [inputLog]);
+
+            const buildString = useMemo(() => {
+                const def = COMMANDS[selectedCmd];
+                if (!def) return "";
+                return def.fields.map(f => {
+                    if (f.v) return f.v;
+                    const usr = builderState[f.n];
+                    if (usr) return usr;
+                    return f.t === 's' ? '""' : '0';
+                }).join(' ');
+            }, [selectedCmd, builderState]);
+
+            return (
+                <div className="flex h-full text-sm">
+                    {/* SIDEBAR */}
+                    <div className="w-64 bg-slate-900 border-r border-slate-700 flex flex-col">
+                        <div className="p-4 border-b border-slate-700 bg-slate-900 z-10">
+                            <div className="flex items-center gap-2 mb-3 text-sky-400">
+                                <i className="fa-solid fa-layer-group text-xl"></i>
+                                <span className="font-bold text-lg tracking-tight">Mercury Studio</span>
+                            </div>
+                            <div className="relative">
+                                <i className="fa-solid fa-search absolute left-3 top-2.5 text-slate-500"></i>
+                                <input 
+                                    type="text" 
+                                    className="w-full bg-slate-800 border border-slate-700 rounded pl-9 pr-2 py-2 text-slate-200 focus:outline-none focus:border-sky-500 transition-colors"
+                                    placeholder="Search Cmds..."
+                                    value={searchQuery}
+                                    onChange={e => setSearchQuery(e.target.value)}
+                                />
+                            </div>
+                        </div>
+                        
+                        <div className="flex-1 overflow-y-auto sidebar-scroll p-2">
+                            {categories.map(cat => {
+                                const filtered = cat.cmds.filter(c => 
+                                    c.id.includes(searchQuery) || 
+                                    c.name.toLowerCase().includes(searchQuery.toLowerCase())
+                                );
+                                if (!filtered.length) return null;
+
+                                return (
+                                    <div key={cat.name} className="mb-4">
+                                        <div className="px-2 py-1 text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
+                                            {cat.name.substring(3)}
+                                        </div>
+                                        <div className="space-y-0.5">
+                                            {filtered.map(cmd => (
+                                                <div 
+                                                    key={cmd.id}
+                                                    onClick={() => { setSelectedCmd(cmd.id); setBuilderState({}); }}
+                                                    className={`px-3 py-2 rounded cursor-pointer flex items-center justify-between group transition-all ${selectedCmd === cmd.id ? 'bg-sky-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}
+                                                >
+                                                    <div className="flex flex-col">
+                                                        <span className="font-mono font-bold">{cmd.id}</span>
+                                                        <span className="text-[10px] opacity-80 truncate w-36">{cmd.name}</span>
+                                                    </div>
+                                                    {selectedCmd === cmd.id && <i className="fa-solid fa-chevron-right text-xs opacity-50"></i>}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )
+                            })}
+                        </div>
+                    </div>
+
+                    {/* MAIN */}
+                    <div className="flex-1 flex flex-col bg-slate-900 relative">
+                        <div className="h-14 border-b border-slate-700 flex items-center px-6 gap-6 bg-slate-800/50">
+                            {['decoder', 'builder', 'reference'].map(t => (
+                                <button
+                                    key={t}
+                                    onClick={() => setActiveTab(t)}
+                                    className={`h-full border-b-2 px-1 capitalize font-medium transition-colors ${activeTab === t ? 'border-sky-500 text-sky-400' : 'border-transparent text-slate-400 hover:text-slate-200'}`}
+                                >
+                                    {t}
+                                </button>
+                            ))}
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-0 relative">
+                            
+                            {/* DECODER */}
+                            {activeTab === 'decoder' && (
+                                <div className="max-w-5xl mx-auto fade-in p-8">
+                                    <div className="mb-8">
+                                        <label className="block text-slate-400 text-xs font-bold uppercase mb-2">
+                                            Paste Log Line / Command String
+                                        </label>
+                                        <textarea 
+                                            className="w-full h-32 bg-slate-800 border border-slate-700 rounded-lg p-4 code-input text-slate-200 focus:border-sky-500 focus:ring-1 focus:ring-sky-500 outline-none transition-all resize-none"
+                                            placeholder='Example: 109 0 11343 4 0 0 1 122 0 0 -1 1 4 0 0 3 5 0 -1 -1 -1'
+                                            value={inputLog}
+                                            onChange={e => setInputLog(e.target.value)}
+                                        ></textarea>
+                                    </div>
+
+                                    {decoded && (
+                                        <div className="glass rounded-xl p-6 border-l-4 border-sky-500">
+                                            {decoded.unknown ? (
+                                                <div className="text-amber-400 font-bold">Unknown Command ID: {decoded.id}</div>
+                                            ) : (
+                                                <div>
+                                                    <div className="flex items-baseline gap-3 mb-1">
+                                                        <span className="text-2xl font-bold text-white">{decoded.def.id}</span>
+                                                        <h2 className="text-xl font-bold text-sky-400">{decoded.def.name}</h2>
+                                                    </div>
+                                                    <p className="text-slate-400 italic mb-6">{decoded.def.desc}</p>
+                                                    
+                                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                                                        {decoded.fields.map((f, i) => (
+                                                            <div key={i} className="bg-slate-800/50 p-3 rounded border border-slate-700">
+                                                                <div className="text-[10px] text-slate-500 uppercase font-bold mb-1">{f.name}</div>
+                                                                <div className="font-mono text-sky-200 break-all">{f.val}</div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+
+                                                    {decoded.trailing && decoded.trailing.length > 0 && (
+                                                        <div className="mt-6 pt-4 border-t border-slate-700">
+                                                            <div className="text-xs text-amber-500 font-bold uppercase mb-2">
+                                                                Extended Data / Unmapped Fields
+                                                            </div>
+                                                            <div className="font-mono text-amber-200 bg-amber-950/30 p-3 rounded border border-amber-900/50 break-all">
+                                                                {decoded.trailing.join(' ')}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* BUILDER (Updated) */}
+                            {activeTab === 'builder' && (
+                                <div className="flex h-full">
+                                    {/* Main Builder Form */}
+                                    <div className="flex-1 overflow-y-auto p-8">
+                                        <div className="max-w-4xl mx-auto">
+                                            <div className="flex items-center gap-4 mb-6 pb-4 border-b border-slate-700">
+                                                <div className="h-12 w-12 bg-sky-500/10 rounded-lg flex items-center justify-center border border-sky-500/20 text-sky-400 font-bold text-xl">
+                                                    {selectedCmd}
+                                                </div>
+                                                <div>
+                                                    <h2 className="text-2xl font-bold text-white">{COMMANDS[selectedCmd].name}</h2>
+                                                    <p className="text-slate-400">{COMMANDS[selectedCmd].desc}</p>
+                                                </div>
+                                            </div>
+
+                                            <div className="border border-slate-700 rounded-lg overflow-hidden bg-slate-800/20">
+                                                <table className="w-full builder-table">
+                                                    <thead className="bg-slate-900 border-b border-slate-700">
+                                                        <tr>
+                                                            <th className="w-1/4">Field</th>
+                                                            <th className="w-1/3">Reference / Type</th>
+                                                            <th className="w-1/3">Input</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-slate-700/50">
+                                                        {COMMANDS[selectedCmd].fields.map((f, i) => {
+                                                            if (f.v) {
+                                                                return (
+                                                                    <tr key={i} className="bg-slate-900/30">
+                                                                        <td className="font-mono text-slate-400">{f.n}</td>
+                                                                        <td className="text-xs text-slate-500 italic">Fixed Value</td>
+                                                                        <td className="font-mono text-green-500">{f.v}</td>
+                                                                    </tr>
+                                                                );
+                                                            }
+
+                                                            const isArray = f.t === 'a';
+                                                            const val = builderState[f.n] || '';
+                                                            
+                                                            return (
+                                                                <tr key={i}>
+                                                                    <td className="font-medium text-slate-200">{f.n}</td>
+                                                                    <td>
+                                                                        <div className="flex flex-col gap-1">
+                                                                            <span className={`text-xs px-2 py-0.5 rounded w-fit ${isArray ? 'bg-purple-500/10 text-purple-400' : 'bg-blue-500/10 text-blue-400'}`}>
+                                                                                {f.t === 's' ? 'String' : f.t === 'h' ? 'Hex' : isArray ? 'Array' : 'Integer'}
+                                                                            </span>
+                                                                            {f.d && <span className="text-xs text-slate-400">{f.d}</span>}
+                                                                        </div>
+                                                                    </td>
+                                                                    <td>
+                                                                        {isArray ? (
+                                                                            <div className="relative">
+                                                                                <textarea 
+                                                                                    className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-slate-200 text-sm font-mono focus:border-sky-500 outline-none h-20"
+                                                                                    placeholder="Space separated values..."
+                                                                                    value={val}
+                                                                                    onChange={e => setBuilderState({...builderState, [f.n]: e.target.value})}
+                                                                                />
+                                                                                <div className="absolute bottom-2 right-2 text-[10px] text-slate-500 bg-slate-900/80 px-1 rounded">
+                                                                                    {val.trim() ? val.trim().split(/\s+/).length : 0} items
+                                                                                </div>
+                                                                            </div>
+                                                                        ) : (
+                                                                            <input 
+                                                                                type="text" 
+                                                                                className="w-full bg-slate-900 border border-slate-600 rounded px-3 py-2 text-slate-200 text-sm font-mono focus:border-sky-500 outline-none"
+                                                                                placeholder={f.t === 's' ? '""' : '0'}
+                                                                                value={val}
+                                                                                onChange={e => setBuilderState({...builderState, [f.n]: e.target.value})}
+                                                                            />
+                                                                        )}
+                                                                    </td>
+                                                                </tr>
+                                                            )
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Sticky Output Panel */}
+                                    <div className="w-80 bg-slate-900 border-l border-slate-700 p-6 flex flex-col">
+                                        <div className="sticky top-6">
+                                            <h3 className="text-xs font-bold text-sky-400 uppercase mb-4 tracking-wider">Generated Command</h3>
+                                            
+                                            <div className="bg-black/50 border border-slate-700 rounded-lg p-4 mb-4 relative group">
+                                                <code className="text-sm font-mono text-green-400 break-all whitespace-pre-wrap leading-relaxed">
+                                                    {buildString}
+                                                </code>
+                                                <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <span className="text-[10px] bg-slate-700 text-slate-300 px-2 py-1 rounded">Len: {buildString.length}</span>
+                                                </div>
+                                            </div>
+
+                                            <button 
+                                                onClick={() => navigator.clipboard.writeText(buildString)}
+                                                className="w-full bg-sky-600 hover:bg-sky-500 text-white font-medium py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2 shadow-lg shadow-sky-900/20"
+                                            >
+                                                <i className="fa-regular fa-copy"></i> Copy to Clipboard
+                                            </button>
+
+                                            <div className="mt-8 pt-6 border-t border-slate-800">
+                                                <h4 className="text-xs font-bold text-slate-500 uppercase mb-3">Quick Actions</h4>
+                                                <div className="space-y-2">
+                                                    <button onClick={() => setBuilderState({})} className="w-full text-left px-3 py-2 text-slate-400 hover:bg-slate-800 rounded text-xs transition-colors">
+                                                        <i className="fa-solid fa-rotate-left mr-2"></i> Reset Fields
+                                                    </button>
+                                                    <button onClick={() => setActiveTab('reference')} className="w-full text-left px-3 py-2 text-slate-400 hover:bg-slate-800 rounded text-xs transition-colors">
+                                                        <i className="fa-solid fa-book-open mr-2"></i> View Full Reference
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* REFERENCE TAB */}
+                            {activeTab === 'reference' && (
+                                <div className="max-w-4xl mx-auto fade-in p-8">
+                                    <div className="glass rounded-xl p-8 border border-slate-700">
+                                        <div className="flex items-center justify-between mb-6">
+                                            <h2 className="text-3xl font-bold text-white">{COMMANDS[selectedCmd].name}</h2>
+                                            <span className="font-mono bg-slate-800 border border-slate-600 text-sky-400 px-3 py-1 rounded text-sm">Cmd: {selectedCmd}</span>
+                                        </div>
+                                        
+                                        <div className="flex items-center gap-2 text-sm text-slate-400 mb-8 pb-6 border-b border-slate-700">
+                                            <span className="bg-slate-800 px-2 py-1 rounded text-xs uppercase font-bold tracking-wider">{COMMANDS[selectedCmd].cat}</span>
+                                            <span className="w-1 h-1 bg-slate-600 rounded-full"></span>
+                                            <span>{COMMANDS[selectedCmd].desc}</span>
+                                        </div>
+
+                                        <h3 className="text-lg font-bold text-sky-400 mb-4 flex items-center gap-2">
+                                            <i className="fa-solid fa-list-ul"></i> Parameters
+                                        </h3>
+                                        
+                                        <div className="border border-slate-700 rounded-lg overflow-hidden">
+                                            <table className="w-full text-left">
+                                                <thead className="bg-slate-800">
+                                                    <tr>
+                                                        <th className="p-3 text-xs font-bold text-slate-400 uppercase w-32">Field Name</th>
+                                                        <th className="p-3 text-xs font-bold text-slate-400 uppercase w-24">Type</th>
+                                                        <th className="p-3 text-xs font-bold text-slate-400 uppercase">Details / Description</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-700">
+                                                    {COMMANDS[selectedCmd].fields.map((f, i) => (
+                                                        <tr key={i} className="hover:bg-slate-800/30 transition-colors">
+                                                            <td className="p-3 font-mono text-slate-200 font-medium">{f.n}</td>
+                                                            <td className="p-3">
+                                                                {f.v ? (
+                                                                    <span className="text-[10px] bg-green-900/30 text-green-400 border border-green-900 px-2 py-0.5 rounded">FIXED</span>
+                                                                ) : (
+                                                                    <span className={`text-[10px] px-2 py-0.5 rounded border ${f.t === 'a' ? 'bg-purple-900/30 text-purple-400 border-purple-900' : 'bg-blue-900/30 text-blue-400 border-blue-900'}`}>
+                                                                        {f.t === 's' ? 'STR' : f.t === 'h' ? 'HEX' : f.t === 'a' ? 'ARR' : 'INT'}
+                                                                    </span>
+                                                                )}
+                                                            </td>
+                                                            <td className="p-3 text-sm text-slate-400">
+                                                                {f.v ? `Value: ${f.v}` : f.d || '-'}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
